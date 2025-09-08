@@ -98,6 +98,40 @@
     pendingPaint: 0
   };
 
+  // === DEBUG 툴 ===
+  const DEBUG = localStorage.getItem("debugMatch")==="1";
+  let _dbgBuf = [];
+  function dbg(...args){
+    if (!DEBUG) return;
+    const line = args.map(a => (typeof a==="object" ? JSON.stringify(a) : String(a))).join(" ");
+    _dbgBuf.push(line); if (_dbgBuf.length>300) _dbgBuf.shift();
+    console.log("[MATCH]", ...args);
+    const box = document.getElementById("debugPanel");
+    if (box) box.textContent = _dbgBuf.slice(-120).join("\n");
+  }
+  function dbgPanelInit(){
+    if (!DEBUG) return;
+    if (document.getElementById("debugPanel")) return;
+    const box = document.createElement("pre");
+    box.id = "debugPanel";
+    box.style.position="fixed";
+    box.style.right="8px";
+    box.style.bottom="8px";
+    box.style.maxWidth="46vw";
+    box.style.maxHeight="40vh";
+    box.style.overflow="auto";
+    box.style.background="rgba(0,0,0,.75)";
+    box.style.color="#c9f7d6";
+    box.style.font="12px/1.3 monospace";
+    box.style.padding="8px 10px";
+    box.style.border="1px solid #2a2a2a";
+    box.style.borderRadius="8px";
+    box.style.zIndex="99999";
+    box.textContent = "🔎 음성매칭 디버그 패널 (localStorage.debugMatch=1)\n";
+    document.body.appendChild(box);
+  }
+  window.addEventListener("load", dbgPanelInit);
+
   // ==== 매칭 엄격도: '엄격' | '보통' | '관대' (기본=보통) ====
   let MATCH_STRICTNESS = localStorage.getItem("matchStrictness") || "보통";
   window.setMatchStrictness = function(level){
@@ -635,103 +669,70 @@
     return decomposeJamo(t).replace(/\s+/g,"");
   }
 
-  // ---------- 매칭: 접두 커버리지 + 밴드 레벤슈타인 ----------
-  const NEAR = new Set([
-    "ㅐ,ㅔ","ㅔ,ㅐ","ㅚ,ㅙ","ㅚ,ㅞ","ㅙ,ㅞ",
-    "ㅢ,ㅣ","ㅣ,ㅢ","ㅓ,ㅗ","ㅕ,ㅛ","ㅠ,ㅡ",
-    "ㄴ,ㅇ","ㅇ,ㄴ","ㅂ,ㅍ","ㅍ,ㅂ","ㅂ,ㅁ","ㅁ,ㅂ",
-    "ㄷ,ㅌ","ㅌ,ㄷ","ㅅ,ㅆ","ㅆ,ㅅ",
-    "ㅎ,"," ,ㅎ"
-  ]);
-  function near(a,b){ return a===b || NEAR.has(`${a},${b}`); }
-
-  function bandedEdit(target, spoken, band=10, subNear=0.35, subFar=1.0, del=0.55, ins=0.55){
-    const n=target.length, m=spoken.length;
-    let prev=new Float32Array(m+1), curr=new Float32Array(m+1);
-    for(let j=0;j<=m;j++) prev[j]=j*ins;
-    for(let i=1;i<=n;i++){
-      const jStart=Math.max(1,i-band), jEnd=Math.min(m,i+band);
-      curr[0]=i*del;
-      for(let j=1;j<=m;j++){
-        if(j<jStart||j>jEnd){ curr[j]=1e9; continue; }
-        const cSub = prev[j-1] + (target[i-1]===spoken[j-1] ? 0 : (near(target[i-1], spoken[j-1])? subNear : subFar));
-        const cDel = prev[j] + del;
-        const cIns = curr[j-1] + ins;
-        curr[j] = Math.min(cSub, cDel, cIns);
-      }
-      const t=prev; prev=curr; curr=t;
-    }
-    let best=prev[m];
-    for(let j=Math.max(0,m-band); j<=m; j++) if(prev[j]<best) best=prev[j];
-    return best;
+  // ---------- 매칭: (추가) 징검다리 방식 ----------
+  function near(a,b){
+    return a===b || new Set([
+      "ㅐ,ㅔ","ㅔ,ㅐ","ㅚ,ㅙ","ㅚ,ㅞ","ㅙ,ㅞ",
+      "ㅢ,ㅣ","ㅣ,ㅢ","ㅓ,ㅗ","ㅕ,ㅛ","ㅠ,ㅡ",
+      "ㄴ,ㅇ","ㅇ,ㄴ","ㅂ,ㅍ","ㅍ,ㅂ","ㅂ,ㅁ","ㅁ,ㅂ",
+      "ㄷ,ㅌ","ㅌ,ㄷ","ㅅ,ㅆ","ㅆ,ㅅ","ㅎ,"," ,ㅎ"
+    ]).has(`${a},${b}`);
   }
 
-  function prefixCoverage(targetJ, spokenJ){
-    const n = targetJ.length;
-    if (!n || !spokenJ.length) return 0;
-
-    const short=30, medium=60;
-    const baseS=0.80, baseM=0.78, baseL=0.75;
-    const delta = (MATCH_STRICTNESS==="엄격"? +0.04 : MATCH_STRICTNESS==="관대"? -0.04 : 0);
-    const thrShort = Math.max(0.65, Math.min(0.92, baseS + delta));
-    const thrMedium= Math.max(0.65, Math.min(0.92, baseM + delta));
-    const thrLong  = Math.max(0.65, Math.min(0.92, baseL + delta));
-
-    let bestI=0;
-    const { subNear, subFar, del, ins } = costsByStrictness();
-
-    for(let i=1;i<=n;i++){
-      const slice = targetJ.slice(0,i);
-      const band = Math.min(12, Math.max(6, Math.floor(i/8)));
-      const ed = bandedEdit(slice, spokenJ, band, subNear, subFar, del, ins);
-      const okRatio = 1 - (ed / Math.max(1,i));
-      const thr = (i<=short)?thrShort : (i<=medium?thrMedium:thrLong);
-      if (okRatio >= thr) bestI = i;
-      if (i - bestI > 20) break;
-    }
-    return bestI;
-  }
-
-  // ---------- 징검다리(부분수열) 매칭 ----------
+  // 징검다리 매칭: targetJ 의 각 자모를 순서대로, heardJ 의 앞으로 제한된 창(window) 안에서 찾으며 전진
   function steppingCoverage(targetJ, heardJ, opts={}){
-    const windowSize = Math.max(1, Math.min(30, opts.windowSize ?? 6));  // 음성 안에서 찾을 최대 폭
-    const jumpLimit  = Math.max(1, Math.min(30, opts.jumpLimit  ?? 8));  // 한 틱에서 칠할 최대 자모
-    const tailGraceP = Math.max(0,  Math.min(0.2, opts.tailGraceP ?? 0.04)); // 끝 여유 비율(최소 4자는 아래에서 보장)
+    const windowSize = Math.max(1, Math.min(30, opts.windowSize ?? 6));   // 창 크기(앞으로 몇 자모까지 허용)
+    const jumpLimit  = Math.max(1, Math.min(30, opts.jumpLimit  ?? 8));   // 한 번에 칠할 수 있는 최대 증가분(점프 제한)
+    const tailGraceP = Math.max(0,  Math.min(0.2, opts.tailGraceP ?? 0.06)); // 끝부분 관대비율
 
-    let i = 0; // targetJ index (징검다리)
-    let j = 0; // heardJ  index (현재 음성 위치)
     const n = targetJ.length, m = heardJ.length;
+    if (DEBUG) {
+      dbg("─".repeat(40));
+      dbg("STEP start n/m:", n, "/", m, "win:", windowSize, "jump:", jumpLimit, "tailP:", tailGraceP);
+      dbg("targetJ:", targetJ.slice(0,120) + (n>120?"…":""));
+      dbg("heardJ :", heardJ.slice(0,120) + (m>120?"…":""));
+    }
+
+    let i = 0, j = 0;  // i: target index, j: heard index (둘 다 전진만)
+    let matched=0, skipped=0;
 
     while (i < n && j < m){
-      // j..j+windowSize-1 범위에서 근접음 포함 일치 찾기
       let found = -1;
       const end = Math.min(m, j + windowSize);
       for (let jj = j; jj < end; jj++){
         if (near(targetJ[i], heardJ[jj])) { found = jj; break; }
       }
       if (found >= 0){
-        i++;            // 다음 징검다리로 이동
-        j = found + 1;  // 음성쪽 포인터도 전진
+        matched++;
+        if (DEBUG) dbg(`✔ match i=${i}(${targetJ[i]}) @ heard[${found}]=${heardJ[found]}  (j→${found+1})`);
+        i++; j = found + 1;  // 둘 다 앞으로
       } else {
-        // 현재 음성으로는 해당 징검다리를 못밟음 → 발음 누락 보정: 타겟에서 다음 징검다리로 이동
-        i++;
+        skipped++;
+        if (DEBUG) dbg(`… skip i=${i}(${targetJ[i]}) (발음누락 보정)`);
+        i++;                 // 발음 누락으로 보고 target 만 전진(heard 는 그대로)
+      }
+      if (matched+skipped>800){ // 안전장치
+        if (DEBUG) dbg("⚠ loop break safety");
+        break;
       }
     }
 
-    // i는 '밟은' 징검다리 개수(= 커버된 접두 길이의 근사)
-    let k = i;
-
-    // 한 틱에서 과도 점프 방지(화면이 앞질러 칠하지 않도록)
+    let k = i; // 이론상 읽어낸 접두 길이
+    const beforeLimit = k;
+    // 너무 빨리 색칠되지 않도록 기존 그려진 위치(state.paintedPrefix) 기준 점프 제한
     if (typeof state?.paintedPrefix === "number") {
       k = Math.min(k, state.paintedPrefix + jumpLimit, n);
     } else {
       k = Math.min(k, n);
     }
 
-    // 끝 여유 구간(거의 끝나면 완료로 인정)
+    // 끝부분 관대함: target 끝에서 일부 자모는 오인식/누락 허용
     const tailGrace = Math.max(4, Math.floor(n * tailGraceP));
     const done = (k >= n) || (k >= n - tailGrace);
 
+    if (DEBUG) {
+      dbg(`result matched=${matched} skipped=${skipped}  k=${k} (raw=${beforeLimit}) tailGrace=${tailGrace} done=${done}`);
+    }
     return { k, done };
   }
 
@@ -799,23 +800,32 @@
 
       const tmpHeard = state.heardJ + (res.isFinal ? "" : pieceJ);
 
-      // --- 징검다리 매칭 적용 ---
+      // 디버그 로그(입력)
+      dbg("final?", !!res.isFinal, "tr:", tr);
+      dbg("pieceJ:", pieceJ);
+      dbg("tmpHeard.len:", (tmpHeard||"").length);
+
+      // 징검다리 매칭으로 접두 길이 k 계산
       const { k, done } = steppingCoverage(targetJ, tmpHeard, {
-        windowSize: 6,     // 필요시 4~10 사이 튜닝
-        jumpLimit: 8,      // 한 틱에서 칠할 최대 자모
-        tailGraceP: 0.04,  // 끝 4% 여유(최소 4자모)
+        windowSize: 6,    // 필요시 튜닝
+        jumpLimit : 8,    // 프레임당 최대 증가 자모수
+        tailGraceP: 0.06  // 끝부분 관대 비율
       });
 
-      // 하이라이트(지연 칠하기)
+      // 디버그 로그(산출)
+      dbg("paint from", state.paintedPrefix, "→", k, "done?", done);
+
+      // 색칠(살짝 지연)
       schedulePaint(k);
 
-      // 모두(또는 거의) 건넜다면 → 절 완료 후 다음 절로 강제 이동
-      if (!state._advancing && done) {
+      // 모두(또는 거의) 칠해졌으면 자동으로 다음 절
+      const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint, k) >= targetJ.length;
+      if (!state._advancing && (done || fullyPainted)) {
         state._advancing = true;
         setTimeout(() => {
-          completeVerse(true); // 체크박스 무시하고 다음 절
+          completeVerse(true); // 무조건 다음 절
           state._advancing = false;
-        }, 100); // 자연스러운 전환
+        }, 100);
         return;
       }
     };
@@ -937,7 +947,7 @@
     return false;
   }
 
-  // ✅ force=true면 자동이동 체크박스 무시하고 이동
+  // ✅ 변경: force=true면 자동이동 체크박스 무시하고 이동
   async function completeVerse(force=false){
     await incVersesRead(1);
     markVerseAsDone(state.currentVerseIdx + 1);
