@@ -1,1 +1,172 @@
-.
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>말씀읽기APP</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#10183a">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+
+  <link rel="stylesheet" href="styles.css"/>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+
+  <!-- 앱 코드 -->
+  <script src="books.js" defer></script>
+  <script src="firebaseConfig.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+  <!-- A. 로그인 화면 -->
+  <section id="screen-login" class="screen show">
+    <div class="hero">
+      <div class="glow"></div>
+      <div class="login-card">
+        <div class="login-head">
+          <div class="logo-hero">📖</div>
+          <h1>말씀읽기APP</h1>
+          <p class="muted">이메일 · 비밀번호 · (선택) 표시이름 · (선택) 닉네임</p>
+        </div>
+
+        <div class="login-body">
+          <label class="form-label" for="email">이메일</label>
+          <input id="email" class="input" type="email" placeholder="name@example.com" autocomplete="email"/>
+
+          <label class="form-label mt12" for="password">비밀번호</label>
+          <input id="password" class="input" type="password" placeholder="비밀번호" autocomplete="current-password"/>
+
+          <label class="form-label mt12" for="displayName">표시이름 (선택, 내 화면용)</label>
+          <input id="displayName" class="input" type="text" placeholder="예: 홍길동" autocomplete="name"/>
+
+          <label class="form-label mt12" for="nickname">닉네임 (선택, 순위 공개용)</label>
+          <input id="nickname" class="input" type="text" placeholder="예: 다윗"/>
+
+          <div class="row mt16" style="gap:8px; width:100%">
+            <button id="btnLogin" class="btn primary fill">로그인</button>
+            <button id="btnSignup" class="btn fill">회원가입</button>
+          </div>
+        </div>
+
+        <div class="login-foot muted">
+          <small>표시이름은 내 화면에만, 닉네임은 순위표에 공개됩니다.</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- B. 본화면 (로그인 후) -->
+  <section id="screen-app" class="screen">
+    <header class="appbar">
+      <div class="brand"><span class="logo">📖</span><strong>말씀읽기</strong></div>
+      <div class="actions">
+        <button id="btnOpenMatrix" class="btn small">현황표</button>
+      </div>
+      <div id="signedIn" class="userbox hidden">
+        <img id="userPhoto" class="avatar" alt="avatar"/>
+        <span id="userName"></span>
+        <button id="btnSignOut" class="btn small danger">로그아웃</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- 선택 섹션 -->
+      <section class="card">
+        <details open>
+          <summary>성경(66권) 선택</summary>
+          <div class="field-row">
+            <label for="bookSelect" class="form-label">성경</label>
+            <select id="bookSelect" class="select"></select>
+          </div>
+        </details>
+
+        <details class="mt12">
+          <summary>장 선택</summary>
+          <div id="chapterGrid" class="grid"></div>
+        </details>
+
+        <details class="mt12">
+          <summary>절 선택</summary>
+          <div id="verseGrid" class="grid small"></div>
+        </details>
+      </section>
+
+      <!-- 리더 섹션 -->
+      <section class="card">
+        <div class="reader-head">
+          <div>
+            <div id="locLabel" class="loc"></div>
+            <div id="verseCount" class="muted"></div>
+          </div>
+        </div>
+        <div id="verseContainer" class="verse-container">
+          <div id="verseText" class="verse-text">성경/장/절을 선택하세요.</div>
+          <div id="listenHint" class="muted sm">음성 인식으로 읽으면 글자가 채워집니다.</div>
+        </div>
+
+        <!-- 마이크 감지 레벨 -->
+        <div style="margin:8px 0;">
+          <div id="micBar" style="height:6px; background:#43d17a; width:0%; transition:width 0.1s"></div>
+          <small id="micDb" class="muted">-∞ dB</small>
+        </div>
+
+        <!-- 👇 음성매칭 엄격도 표시/선택 (UI만 추가) -->
+        <div id="strictControls" class="muted sm" style="margin:6px 0 0 0;">
+          <span>매칭:</span>
+          <label style="margin-left:6px;"><input type="radio" name="matchStrict" value="엄격"> 엄격</label>
+          <label style="margin-left:6px;"><input type="radio" name="matchStrict" value="보통" checked> 보통</label>
+          <label style="margin-left:6px;"><input type="radio" name="matchStrict" value="관대"> 관대</label>
+        </div>
+
+        <!-- 버튼들: 고정형(오른쪽) ⟨ / 🎙️ / ⟩  -->
+        <div class="fab-row" style="
+          position:fixed; right:12px; top:50%; transform:translateY(-50%);
+          display:flex; flex-direction:column; gap:12px; align-items:center; z-index:1000;">
+          <button id="btnPrevVerse" class="fab" aria-label="이전 절">⟨</button>
+          <button id="btnToggleMic" class="fab primary" aria-label="마이크 토글">🎙️</button>
+          <button id="btnNextVerse" class="fab" aria-label="다음 절">⟩</button>
+        </div>
+
+        <!-- ‘해당절읽음’ 버튼: 오른쪽 정렬 & 초록색 -->
+        <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+          <button id="btnMarkRead" style="background:#43d17a; color:#fff; padding:6px 12px; border-radius:6px;">
+            해당절읽음
+          </button>
+        </div>
+
+        <!-- 통계줄 -->
+        <div class="row between stats">
+          <strong id="myStats">—</strong>
+          <label class="muted"><input type="checkbox" id="autoAdvance" checked/> 절 완료 시 자동 이동</label>
+        </div>
+      </section>
+
+      <!-- 순위 -->
+      <section class="card">
+        <h3>📈 읽기 순위</h3>
+        <ol id="leaderList" class="leaders"></ol>
+        <p class="muted sm">※ 닉네임이 없는 사용자는 이메일 앞부분으로 표시됩니다.</p>
+      </section>
+    </main>
+
+    <!-- 현황표 모달 -->
+    <div id="matrixModal" class="modal hidden">
+      <div class="modal-body full">
+        <div class="row between">
+          <h3>읽기 현황표</h3>
+          <button id="btnCloseMatrix" class="btn small" type="button">닫기</button>
+        </div>
+        <div id="matrixWrap" class="matrix-wrap"></div>
+        <div class="muted smallprint">* 초록=완독 장, 회색=미완료 (가로 스크롤 가능)</div>
+      </div>
+    </div>
+  </section>
+
+</body>
+</html>
