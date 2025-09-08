@@ -86,15 +86,19 @@
     progress:{}, myStats:{versesRead:0,chaptersRead:0,last:{bookKo:null,chapter:null,verse:0}},
     ignoreUntilTs: 0, paintedPrefix: 0,
     verseDoneMap: {},
+    // 하이라이트 정합성용 캐시
     charCumJamo: [],    // 각 화면 글자까지의 누적 자모 길이
     charJamoLens: [],   // 각 화면 글자의 자모 기여 길이
-    heardJ: "",         // 누적 음성(자모) 버퍼
-    _advancing:false,   // 자동 이동 제어
-    paintTimer: null,   // 🎚️ 약간 늦게 칠하기용 타이머
+    // 누적 음성(자모) 버퍼
+    heardJ: "",
+    // 자동 이동 제어
+    _advancing:false,
+    // 🎚️ 약간 늦게 칠하기용 타이머
+    paintTimer: null,
     pendingPaint: 0
   };
 
-  // ==== 매칭 엄격도 ====
+  // ==== 매칭 엄격도: '엄격' | '보통' | '관대' (기본=보통) ====
   let MATCH_STRICTNESS = localStorage.getItem("matchStrictness") || "보통";
   window.setMatchStrictness = function(level){
     if(!["엄격","보통","관대"].includes(level)) return;
@@ -102,6 +106,7 @@
     localStorage.setItem("matchStrictness", level);
     const hint = document.getElementById("listenHint");
     if (hint) hint.textContent = `음성매칭 엄격도: ${level}`;
+    // 라디오 UI 동기화
     document.querySelectorAll('input[name=matchStrict]').forEach(r=>{
       r.checked = (r.value === level);
     });
@@ -141,7 +146,7 @@
     }
   }
   loadBible();
-  initStrictnessUI();
+  initStrictnessUI(); // 👈 엄격도 UI 초기화
 
   // ---------- Auth UX ----------
   function mapAuthError(e) {
@@ -350,6 +355,7 @@
     state.myStats.last = { bookKo: state.currentBookKo, chapter: null, verse: 0 }; saveLastPosition();
   });
 
+  // 장 버튼(원형) + 완료색 반영
   function buildChapterGrid() {
     const b = getBookByKo(state.currentBookKo);
     if (!b || !els.chapterGrid) return;
@@ -357,12 +363,13 @@
 
     for (let i = 1; i <= b.ch; i++) {
       const btn = document.createElement("button");
-      btn.type = "button";
+      btn.type = "button"; // 폼 제출 방지
       const isDonePersist = state.progress[b.id]?.readChapters?.has(i);
       btn.className = "chip";
-      btn.style.borderRadius = "9999px";
+      btn.style.borderRadius = "9999px"; // 원형
       btn.textContent = i;
 
+      // 세션 중 이 장의 절을 전부 완료했다면 done
       if (state.currentChapter === i) {
         const key = `${state.currentBookKo}#${i}`;
         const set = state.verseDoneMap[key];
@@ -382,6 +389,7 @@
     }
   }
 
+  // 장 버튼 위임 클릭(동적 갱신/리스너 누락 대비)
   els.chapterGrid?.addEventListener("click", (e) => {
     const btn = e.target?.closest("button.chip");
     if (!btn || !els.chapterGrid.contains(btn)) return;
@@ -395,6 +403,7 @@
 
   function keyForChapter(){ return `${state.currentBookKo}#${state.currentChapter}`; }
 
+  // 절 버튼(원형) + 완료색 반영
   function buildVerseGrid() {
     if (!els.verseGrid) return;
     els.verseGrid.innerHTML = "";
@@ -423,6 +432,7 @@
   }
 
   // ---------- 표시/매칭 ----------
+  // 자모 누적 길이 맵 — normalizeToJamo 규칙과 동일하게 길이 계산(문장부호/공백은 0)
   function buildCharToJamoCumMap(str){
     const jamoLens = [];
     const cum = [0];
@@ -430,7 +440,7 @@
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
       const rawJamo = decomposeJamo(ch).normalize("NFKC");
-      const cleaned = rawJamo.replace(/[^\p{L}\p{N}]/gu, "");
+      const cleaned = rawJamo.replace(/[^\p{L}\p{N}]/gu, ""); // 문장부호/공백 제외
       const len = cleaned.length;
       jamoLens.push(len);
       cum.push(cum[cum.length - 1] + len);
@@ -440,14 +450,16 @@
     return cum;
   }
 
+  // updateVerseText
   function updateVerseText() {
     const v = state.verses[state.currentVerseIdx] || "";
     state.paintedPrefix = 0;
-    state.heardJ = "";
+    state.heardJ = "";            // 절 바뀔 때 누적 음성 버퍼 초기화
     state.ignoreUntilTs = 0;
-    state._advancing = false;
+    state._advancing = false;     // 자동 넘어가기 락 해제
     if (state.paintTimer) { clearTimeout(state.paintTimer); state.paintTimer=null; }
 
+    // 현재 절의 자모 문자열과 누적 자모 길이 맵 캐시
     state.targetJ = normalizeToJamo(v, false);
     state.charCumJamo = buildCharToJamoCumMap(v);
 
@@ -458,7 +470,8 @@
       for (let i = 0; i < v.length; i++) {
         const s = document.createElement("span");
         s.textContent = v[i];
-        s.style.color = "";
+        // 🎨 글자색만 변경할 것이므로 초기에는 기본색
+        s.style.color = ""; // reset
         els.verseText.appendChild(s);
       }
     }
@@ -470,6 +483,7 @@
     }
   }
 
+  // 🎨 글자색만 바꾸는 칠하기
   function paintRead(prefixJamoLen){
     if (!els.verseText) return;
     const spans = els.verseText.childNodes;
@@ -486,11 +500,14 @@
     }
 
     for (let i=0;i<spans.length;i++){
+      // 읽힌 글자: 초록색(#43d17a), 나머지 기본
       spans[i].style.color = (i < charCount) ? "#43d17a" : "";
+      // 배경 등 기존 클래스는 사용하지 않음
       spans[i].classList?.remove("read");
     }
   }
 
+  // ⏱️ 살짝 늦게 칠하기(음성보다 앞서지 않도록)
   function schedulePaint(nextPrefix){
     state.pendingPaint = Math.max(state.pendingPaint, nextPrefix);
     if (state.paintTimer) clearTimeout(state.paintTimer);
@@ -500,7 +517,7 @@
       state.paintedPrefix = target;
       state.pendingPaint = 0;
       state.paintTimer = null;
-    }, 140);
+    }, IS_ANDROID ? 180 : 140); // Android에서 조금 더 늦게
   }
 
   function markVerseAsDone(verseIndex1Based) {
@@ -508,6 +525,7 @@
     if (!state.verseDoneMap[key]) state.verseDoneMap[key] = new Set();
     state.verseDoneMap[key].add(verseIndex1Based);
 
+    // 절 버튼 색 갱신
     if (els.verseGrid) {
       const btn = els.verseGrid.children[verseIndex1Based - 1];
       if (btn) {
@@ -516,6 +534,7 @@
       }
     }
 
+    // 모든 절 완료되었으면 현재 장 버튼도 done
     if (state.verses.length > 0 && state.verseDoneMap[key].size === state.verses.length) {
       if (els.chapterGrid) {
         const idx = (state.currentChapter - 1);
@@ -607,7 +626,7 @@
       .replace(/^\s*십\s*$/g,"10");
   }
 
-  const USE_PRONUN_HEUR = true;
+  const USE_PRONUN_HEUR = true; // '의'≈'에' 등
   function normalizeToJamo(s, forSpoken=false){
     let t = (s||"").normalize("NFKC").replace(/[“”‘’"'\u200B-\u200D`´^~]/g,"").toLowerCase();
     t = normalizeKoreanNumbers(t);
@@ -673,7 +692,9 @@
     return bestI;
   }
 
+  // 예측형 접두 매칭 유틸
   function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
+  /** 들어온 음성(heardJ)으로 targetJ의 접두 길이 k를 예측 (유사도 0..1) */
   function bestPredictiveCoverage(targetJ, heardJ){
     const m = heardJ.length, n = targetJ.length;
     if (!m || !n) return { k: 0, score: 0 };
@@ -698,17 +719,19 @@
     if (!SR) return null;
     const r = new SR();
     r.lang = 'ko-KR';
-    r.continuous = !IS_ANDROID;
-    r.interimResults = !IS_ANDROID ? true : false;
-    try { r.maxAlternatives = 4; } catch(_) {}
+    r.continuous = !IS_ANDROID;                    // 안드로이드는 false가 안정
+    r.interimResults = !IS_ANDROID ? true : false; // 안드로이드는 final 위주
+    try {
+      r.maxAlternatives = IS_ANDROID ? 8 : 4;      // Android에서 대안을 더 넉넉히
+    } catch(_) {}
     return r;
   }
 
   let loopTimer=null;
 
   // 타이밍
-  const ANDROID_WATCHDOG_MS  = 8500;
-  const ANDROID_NORESULT_MS  = 7000;
+  const ANDROID_WATCHDOG_MS  = IS_ANDROID ? 11000 : 8500;
+  const ANDROID_NORESULT_MS  = IS_ANDROID ?  9000 : 7000;
 
   let watchdogTimer = null;
   let noResultTimer = null;
@@ -726,7 +749,7 @@
     }
     state.recog = recog;
 
-    // onresult — 관대한 매칭 + 글자색만 변경 + 140ms 지연 칠하기 + 자연스러운 다음 절 이동
+    // onresult — 관대/지연/자동이동 튜닝(안드로이드 우선)
     recog.onresult = (evt)=>{
       lastResultTs = Date.now();
       if (noResultTimer) { clearTimeout(noResultTimer); noResultTimer = null; }
@@ -746,6 +769,9 @@
       const targetJ = state.targetJ || normalizeToJamo(v, false);
       const pieceJ  = normalizeToJamo(tr, true);
 
+      // Android에서 너무 짧은 interim 노이즈 무시
+      if (IS_ANDROID && !res.isFinal && pieceJ.length < 3) return;
+
       // 누적
       if (res.isFinal || IS_ANDROID) {
         state.heardJ = (state.heardJ + pieceJ);
@@ -755,28 +781,34 @@
 
       const tmpHeard = state.heardJ + (res.isFinal ? "" : pieceJ);
 
-      // ✅ 예측 커버리지 기반 칠하기
+      // 예측형 매칭 → 칠하기
       const { k: predK, score } = bestPredictiveCoverage(targetJ, tmpHeard);
-      if (score >= 0.40) {  // 변동치2 0.45 -> 0.40 유사도 임계값
-        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length); // 변동치 +5 -> +8 한 틱당 진행 제한을 +5 → +8로 늘려 더 빨리 끝까지 닿게 합니다.
+      const SCORE_OK = IS_ANDROID ? 0.38 : 0.40;
+      const STEP_CAP = IS_ANDROID ? 10   : 8;
+
+      if (score >= SCORE_OK) {
+        const limited = Math.min(predK, state.paintedPrefix + STEP_CAP, targetJ.length);
         schedulePaint(limited);
       }
 
-      // 본문 전부 칠해지면 무조건 다음 절로 이동
-      // const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
+      // 본문이 모두 칠해졌다면 자연스러운 자동이동
+      const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
       if (!state._advancing && fullyPainted) {
         state._advancing = true;
+        const ADV_DELAY = IS_ANDROID ? 140 : 100;
         setTimeout(() => {
-          completeVerse(true);
+          completeVerse(true); // 무조건 다음 절
           state._advancing = false;
-        }, 120);  // 변동치 120 -> 100
+        }, ADV_DELAY);
         return;
       }
 
-      // 관대한 완료 판정 (보조 트리거)
+      // 거의 끝났을 때 관대 판정(안드로이드에서 더 관대)
       const overallRatio = state.paintedPrefix / Math.max(1, targetJ.length);
-      const need = 0.50; // 변동치1  비율 임계값 0.60 -> 0.50
-      const nearEnd = state.paintedPrefix >= targetJ.length - 15; // 변동치2 끝 근접범위 4자모 -> 10자모
+      const need   = IS_ANDROID ? 0.50 : 0.60;
+      const margin = IS_ANDROID ? 12    : 10;
+      const nearEnd = state.paintedPrefix >= targetJ.length - margin;
+
       if (overallRatio >= need && nearEnd && !state._advancing) {
         state._advancing = true;
         completeVerse(true);
@@ -853,10 +885,10 @@
       if (showAlert) alert("이 브라우저는 음성인식을 지원하지 않습니다.");
       return;
     }
-    await primeMicrophone();
+    await primeMicrophone(); // 권한/경로 고정
 
     state.paintedPrefix = 0;
-    state.heardJ = "";
+    state.heardJ = "";            // 시작 시 버퍼 초기화
     state.ignoreUntilTs = 0;
     state._advancing = false;
     if (state.paintTimer) { clearTimeout(state.paintTimer); state.paintTimer=null; }
@@ -864,7 +896,7 @@
     els.btnToggleMic && (els.btnToggleMic.textContent="⏹️");
     startMicLevel();
 
-    refreshRecogModeLock();
+    refreshRecogModeLock(); // 라디오 잠금(없으면 무시)
     runRecognizerLoop();
   }
 
@@ -882,9 +914,10 @@
     if (resetBtn && els.btnToggleMic) els.btnToggleMic.textContent="🎙️";
     stopMicLevel();
     releasePrimeMic();
-    refreshRecogModeLock();
+    refreshRecogModeLock(); // 라디오 잠금 해제(없으면 무시)
   }
 
+  // 마이크 버튼으로만 제어
   els.btnToggleMic?.addEventListener("click", ()=>{ if(!state.listening) startListening(); else stopListening(); });
 
   // ---------- 완료/자동이동 ----------
@@ -894,12 +927,13 @@
       state.myStats.last.verse = state.currentVerseIdx + 1;
       saveLastPosition();
       updateVerseText();
-      buildVerseGrid();
+      buildVerseGrid();   // 절 버튼 active/완료 반영
       return true;
     }
     return false;
   }
 
+  // ✅ force=true면 자동이동 체크박스 무시하고 이동
   async function completeVerse(force=false){
     await incVersesRead(1);
     markVerseAsDone(state.currentVerseIdx + 1);
@@ -917,7 +951,7 @@
           await selectChapter(next);
           buildChapterGrid();
           state.paintedPrefix = 0;
-          state.heardJ = "";
+          state.heardJ = "";               // 다음 장으로 넘어가면 버퍼 초기화
           state.ignoreUntilTs = Date.now() + 600;
         } else {
           alert("이 권의 모든 장을 완료했습니다. 다른 권을 선택하세요.");
@@ -925,7 +959,7 @@
         return;
       }
       state.paintedPrefix = 0;
-      state.heardJ = "";
+      state.heardJ = "";                   // 다음 절로 넘어가면 버퍼 초기화
       state.ignoreUntilTs = Date.now() + 500;
     } else {
       state.ignoreUntilTs = Date.now() + 300;
@@ -941,7 +975,7 @@
       saveLastPosition();
       updateVerseText();
       buildVerseGrid();
-      state.paintedPrefix=0; state.heardJ=""; state.ignoreUntilTs = Date.now() + 300;
+      state.paintedPrefix=0; state.heardJ=""; state.ignoreUntilTs = Date.now() + 300; // 버퍼 초기화
     }
   });
   els.btnPrevVerse?.addEventListener("click", ()=>{
@@ -952,7 +986,7 @@
       saveLastPosition();
       updateVerseText();
       buildVerseGrid();
-      state.paintedPrefix=0; state.heardJ=""; state.ignoreUntilTs = Date.now() + 300;
+      state.paintedPrefix=0; state.heardJ=""; state.ignoreUntilTs = Date.now() + 300; // 버퍼 초기화
     }
   });
 
@@ -970,7 +1004,7 @@
       updateVerseText();
       buildVerseGrid();
       state.paintedPrefix = 0;
-      state.heardJ = "";
+      state.heardJ = "";                 // 버퍼 초기화
       state.ignoreUntilTs = Date.now() + 500;
       return;
     }
@@ -986,7 +1020,7 @@
       await selectChapter(nextChapter);
       buildChapterGrid();
       state.paintedPrefix = 0;
-      state.heardJ = "";
+      state.heardJ = "";               // 버퍼 초기화
       state.ignoreUntilTs = Date.now() + 600;
     } else {
       alert("이 권의 모든 장을 완료했습니다. 다른 권을 선택하세요.");
@@ -1042,6 +1076,7 @@
 
     const thead = document.createElement("thead");
 
+    // 3행 헤더
     const trTop    = document.createElement("tr");
     const trMiddle = document.createElement("tr");
     const trBottom = document.createElement("tr");
@@ -1080,6 +1115,7 @@
     thead.appendChild(trBottom);
     table.appendChild(thead);
 
+    // 본문
     const tbody = document.createElement("tbody");
     for (const b of BOOKS) {
       const tr = document.createElement("tr");
@@ -1192,6 +1228,7 @@
       }
     }
 
+    // bible.json: 책명(ko) → 장(String) → {절:String}
     const chObj = state.bible?.[state.currentBookKo]?.[String(chapter)];
     if (!chObj) {
       els.verseText && (els.verseText.textContent = `${b?.ko || ""} ${chapter}장 본문 없음`);
@@ -1213,7 +1250,7 @@
     state.myStats.last = { bookKo: state.currentBookKo, chapter, verse: 1 };
     saveLastPosition();
 
-    buildChapterGrid();
+    buildChapterGrid(); // 현재 장 active/done 반영 갱신
   }
 
 })();
